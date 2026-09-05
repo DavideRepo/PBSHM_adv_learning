@@ -1,0 +1,109 @@
+"""Offline, synthetic checks only. No fit calls, optimizer steps or datasets downloaded."""
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from torch.utils.data import TensorDataset
+
+import demo
+
+
+class DemoChecks(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        torch.set_num_threads(2)
+
+    def test_forward_shapes(self):
+        model = demo.Autoencoder().eval()
+        with torch.no_grad():
+            z, reconstruction, logits = model(torch.rand(3, 1, 28, 28))
+            domains = model.domain_logits(z, 0.1)
+        self.assertEqual(tuple(z.shape), (3, 2))
+        self.assertEqual(tuple(reconstruction.shape), (3, 1, 28, 28))
+        self.assertEqual(tuple(logits.shape), (3, 9))
+        self.assertEqual(tuple(domains.shape), (3, 2))
+        self.assertTrue(((reconstruction >= 0) & (reconstruction <= 1)).all())
+
+    def test_grl_reverses_encoder_gradient_only(self):
+        head = torch.nn.Linear(2, 2)
+        z = torch.tensor([[0.2, 0.8]], requires_grad=True)
+        plain = torch.autograd.grad(head(z).square().sum(), (z, head.weight))
+        reversed_ = torch.autograd.grad(head(demo.GradientReversal.apply(z, 0.3)).square().sum(),
+                                        (z, head.weight))
+        torch.testing.assert_close(reversed_[0], -0.3 * plain[0])
+        torch.testing.assert_close(reversed_[1], plain[1])
+        zero = torch.autograd.grad(demo.GradientReversal.apply(z, 0).sum(), z)[0]
+        torch.testing.assert_close(zero, torch.zeros_like(z))
+
+    def test_curation_and_hidden_target_labels(self):
+        # Stub native dataset construction to verify the whole preparation boundary offline.
+        class FakeMNIST:
+            def __init__(self, root, train, download):
+                self.targets = torch.arange(10)
+                self.data = torch.arange(10, dtype=torch.uint8)[:, None, None].expand(10, 28, 28)
+
+        class FakeUSPS:
+            def __init__(self, root, train, download):
+                self.targets = list(range(10))
+                self.data = np.arange(10, dtype=np.uint8)[:, None, None] * np.ones((10, 16, 16), dtype=np.uint8)
+
+        with patch.object(demo, "MNIST", FakeMNIST), patch.object(demo, "USPS", FakeUSPS):
+            source, target, native = demo.training_data("unused", demo.Config(source_samples=None))
+        self.assertEqual(len(source), 9)
+        self.assertEqual(source.tensors[1].tolist(), list(range(9)))
+        self.assertEqual(set(vars(target)), {"images"})
+        self.assertEqual(tuple(target[0].shape), (1, 28, 28))
+        torch.testing.assert_close(target[0], torch.full((1, 28, 28), 1 / 255))
+        self.assertEqual(native[1].shape[-2:], (16, 16))
+        indices = demo.digit_indices(torch.arange(10), limit=5, seed=7)
+        self.assertEqual(len(indices), 5)
+        self.assertNotIn(0, indices.tolist())
+
+    def test_checkpoint_round_trip_and_missing_file(self):
+        model = demo.Autoencoder().eval()  # Random initialization; never fitted.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "synthetic.pt"
+            demo.save_checkpoint(path, model, [], demo.Config(), adaptation=False)
+            loaded, history, config = demo.load_checkpoint(path, adaptation=False)
+            for key, value in model.state_dict().items():
+                torch.testing.assert_close(loaded.state_dict()[key], value)
+            self.assertEqual(history, [])
+            self.assertEqual(config["seed"], 7)
+            with self.assertRaises(ValueError):
+                demo.load_checkpoint(path, adaptation=True)
+            with self.assertRaisesRegex(FileNotFoundError, "No training was started"):
+                demo.load_checkpoint(Path(folder) / "missing.pt", adaptation=False)
+
+    def test_notebook_and_plots_without_training(self):
+        path = Path(__file__).resolve().parents[1] / "adversarial_autoencoder.ipynb"
+        notebook = json.loads(path.read_text())
+        for cell in notebook["cells"]:
+            if cell["cell_type"] == "code":
+                compile("".join(cell["source"]), str(path), "exec")
+                self.assertEqual(cell["outputs"], [])
+                self.assertIsNone(cell["execution_count"])
+        dataset = TensorDataset(torch.rand(9, 1, 28, 28), torch.arange(9))
+        model = demo.Autoencoder().eval()
+        before = {k: v.clone() for k, v in model.state_dict().items()}
+        result = demo.evaluate(model, dataset)
+        self.assertEqual(result["y"].tolist(), list(range(1, 10)))
+        self.assertTrue(0 <= result["accuracy"] <= 1)
+        figures = [demo.plot_inputs((np.zeros((8, 28, 28)), np.zeros((8, 16, 16)))),
+                   demo.plot_latent(result, result, "Synthetic check"),
+                   demo.plot_reconstructions(model, dataset, dataset)]
+        for figure in figures:
+            figure.canvas.draw()
+            plt.close(figure)
+        for key, value in model.state_dict().items():
+            torch.testing.assert_close(value, before[key])
+
+
+if __name__ == "__main__":
+    unittest.main()
