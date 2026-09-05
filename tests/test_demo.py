@@ -81,10 +81,44 @@ class DemoChecks(unittest.TestCase):
                 demo.load_checkpoint(path, adaptation=True)
             with self.assertRaisesRegex(FileNotFoundError, "No training was started"):
                 demo.load_checkpoint(Path(folder) / "missing.pt", adaptation=False)
-            # The prior autoencoder format must fail before loading model weights.
-            torch.save({"format_version": 1}, path)
-            with self.assertRaisesRegex(ValueError, "not from the plain DANN"):
-                demo.load_checkpoint(path, adaptation=False)
+            # Earlier architectures must fail before loading model weights.
+            for version in (1, 2):
+                torch.save({"format_version": version, "architecture": "DANN"}, path)
+                with self.assertRaisesRegex(ValueError, "expanded DANN"):
+                    demo.load_checkpoint(path, adaptation=False)
+
+    def test_linear_adversarial_schedule(self):
+        cfg = demo.Config()
+        for epoch in (0, 1, 2, 3):
+            self.assertEqual(demo.reversal_strength(epoch, 0, 100, cfg), 0.0)
+        self.assertAlmostEqual(demo.reversal_strength(10, 50, 100, cfg), 0.05)
+        for epoch in (18, 24, 29, 30):
+            self.assertEqual(demo.reversal_strength(epoch, 0, 100, cfg), 0.1)
+        # Changing the epoch budget moves the endpoint to 60% of that budget.
+        longer = demo.Config(epochs=50)
+        self.assertAlmostEqual(demo.reversal_strength(16, 50, 100, longer), 0.05)
+        self.assertEqual(demo.reversal_strength(30, 0, 100, longer), 0.1)
+        with self.assertRaisesRegex(ValueError, "0.6"):
+            demo.reversal_strength(0, 0, 1, demo.Config(epochs=5))
+
+    def test_confusion_matrix_orientation_and_normalization(self):
+        result = {"y": np.array([1, 1, 1, 2, 9]),
+                  "prediction": np.array([1, 1, 2, 1, 9])}
+        counts = demo.confusion_counts(result)
+        self.assertEqual(counts.sum(), 5)
+        self.assertEqual(counts[0, 0], 2)
+        self.assertEqual(counts[0, 1], 1)
+        self.assertEqual(counts[1, 0], 1)
+        self.assertEqual(counts[8, 8], 1)
+        fig = demo.plot_confusion_matrices(result, result)
+        percentages = fig.axes[0].images[0].get_array()
+        self.assertAlmostEqual(percentages[0, 0], 200 / 3)
+        self.assertEqual(percentages[1, 0], 100)
+        self.assertEqual(percentages[8, 8], 100)
+        self.assertTrue(np.isfinite(percentages).all())  # Absent digits stay zero.
+        np.testing.assert_allclose(percentages[2:8], 0)
+        fig.canvas.draw()
+        plt.close(fig)
 
     def test_notebook_and_plots_without_training(self):
         path = Path(__file__).resolve().parents[1] / "dann.ipynb"
@@ -121,7 +155,7 @@ class DemoChecks(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             try:
                 os.chdir(folder)
-                for name, adaptation in (("source_only_dann", False), ("adapted_dann", True)):
+                for name, adaptation in (("source_only_dann_v3", False), ("adapted_dann_v3", True)):
                     demo.save_checkpoint(Path("checkpoints") / f"{name}.pt", demo.DANN(),
                                          history, demo.Config(), adaptation)
                 with patch.object(demo, "training_data", return_value=(source, target, native)), \

@@ -1,7 +1,6 @@
 """Small MNIST -> USPS DANN demo. Importing this module never trains a model."""
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import math
 import random
 
 import matplotlib.pyplot as plt
@@ -16,9 +15,9 @@ from torchvision.datasets import MNIST, USPS
 @dataclass
 class Config:
     seed: int = 7
-    epochs: int = 20
+    epochs: int = 30
     batch_size: int = 128
-    source_samples: int | None = 12000  # None uses all available training images.
+    source_samples: int | None = 24000  # None uses all available training images.
     target_samples: int | None = None
     learning_rate: float = 1e-3
     adversarial_weight: float = 0.1
@@ -106,11 +105,14 @@ class DANN(nn.Module):
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 16, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
             nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
+            nn.Conv2d(32, 32, 3, padding=1), nn.ReLU(),  # Still 7 x 7; no extra pooling.
             nn.Flatten(), nn.Linear(32 * 7 * 7, 64), nn.ReLU(), nn.Linear(64, 2),
         )
         # Digit class is the pedagogical analogue of structural health state.
-        self.health_classifier = nn.Sequential(nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 9))
-        self.domain_classifier = nn.Sequential(nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 2))
+        self.health_classifier = nn.Sequential(
+            nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 9))
+        self.domain_classifier = nn.Sequential(
+            nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 32), nn.ReLU(), nn.Linear(32, 2))
 
     def forward(self, images):
         z = self.encoder(images)
@@ -121,10 +123,14 @@ class DANN(nn.Module):
 
 
 def reversal_strength(epoch, step, steps_per_epoch, cfg):
-    # First learn a source-discriminative representation, then ramp alignment.
+    """Off during warm-up, linear ramp to 60% of training, then constant."""
+    ramp_end = 0.6 * cfg.epochs
+    if not 0 <= cfg.warmup_epochs < ramp_end:
+        raise ValueError("warmup_epochs must be nonnegative and less than 0.6 * epochs.")
+    # epoch is zero-based: elapsed=3 means the first three epochs are complete.
     elapsed = epoch + step / steps_per_epoch
-    progress = max(0.0, (elapsed - cfg.warmup_epochs) / max(1, cfg.epochs - cfg.warmup_epochs))
-    return cfg.adversarial_weight * (2.0 / (1.0 + math.exp(-10.0 * progress)) - 1.0)
+    progress = (elapsed - cfg.warmup_epochs) / (ramp_end - cfg.warmup_epochs)
+    return cfg.adversarial_weight * min(1.0, max(0.0, progress))
 
 
 def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
@@ -133,8 +139,8 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
         raise ValueError("Use positive epochs, batch size and source dataset size.")
     if adaptation and (not isinstance(target_set, ImagesOnly) or not len(target_set)):
         raise ValueError("Adaptation requires a nonempty ImagesOnly target dataset.")
-    if adaptation and cfg.warmup_epochs >= cfg.epochs:
-        raise ValueError("Use more epochs than warmup_epochs to enable adversarial learning.")
+    if adaptation:
+        reversal_strength(0, 0, 1, cfg)  # Validate the schedule before fitting.
     seed_everything(cfg.seed)  # Identical initialization for both experiments.
     model = DANN().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
@@ -194,7 +200,7 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
 def save_checkpoint(path, model, history, cfg, adaptation):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"format_version": 2, "architecture": "DANN",
+    torch.save({"format_version": 3, "architecture": "DANN",
                 "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
                 "history": history, "config": asdict(cfg), "adaptation": adaptation,
                 "digits": list(range(1, 10)), "preprocessing": "gray28_bilinear_0to1"}, path)
@@ -206,9 +212,9 @@ def load_checkpoint(path, adaptation, device="cpu"):
         raise FileNotFoundError(f"Missing {path}. Set MODE = 'train' and run both training cells, "
                                 "or place your trained checkpoint here. No training was started.")
     saved = torch.load(path, map_location=device, weights_only=True)
-    if saved.get("format_version") != 2 or saved.get("architecture") != "DANN":
-        raise ValueError("This checkpoint is not from the plain DANN demo. "
-                         "Train a new DANN pair or load compatible DANN checkpoints.")
+    if saved.get("format_version") != 3 or saved.get("architecture") != "DANN":
+        raise ValueError("This checkpoint is incompatible with the expanded DANN (format 3). "
+                         "Train a new pair or load matching format-3 checkpoints.")
     if (saved["adaptation"] != adaptation or
             saved["digits"] != list(range(1, 10)) or saved["preprocessing"] != "gray28_bilinear_0to1"):
         raise ValueError("Checkpoint does not match this experiment / demo format.")
@@ -262,4 +268,35 @@ def plot_latent(source_result, target_result, title, max_points=1500):
     axes[0].set_ylabel("$z_2$")
     fig.colorbar(scatter, ax=list(axes[1:]), ticks=range(1, 10), label="Digit")
     fig.suptitle(title + " — actual 2D bottleneck, no PCA / t-SNE")
+    return fig
+
+
+def confusion_counts(result):
+    """Rows = true digit, columns = predicted digit; inputs use digit labels 1-9."""
+    counts = np.zeros((9, 9), dtype=int)
+    np.add.at(counts, (result["y"] - 1, result["prediction"] - 1), 1)
+    return counts
+
+
+def plot_confusion_matrices(source_only_result, adapted_result):
+    """Compare USPS errors, with each true-digit row expressed as percentages."""
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5), layout="constrained")
+    for ax, result, title in zip(axes, (source_only_result, adapted_result), ("Source only", "DANN")):
+        counts = confusion_counts(result)
+        totals = counts.sum(axis=1, keepdims=True)
+        percentages = np.divide(100.0 * counts, totals,
+                                out=np.zeros_like(counts, dtype=float), where=totals != 0)
+        im = ax.imshow(percentages, cmap="Blues", vmin=0, vmax=100)
+        for row in range(9):
+            for col in range(9):
+                if counts[row, col]:
+                    ax.text(col, row, f"{percentages[row, col]:.0f}", ha="center", va="center",
+                            color="white" if percentages[row, col] > 50 else "black", fontsize=9)
+        ax.set_xticks(range(9), range(1, 10))
+        ax.set_yticks(range(9), range(1, 10))
+        ax.set_xlabel("Predicted digit")
+        ax.set_ylabel("True digit")
+        ax.set_title(title)
+    fig.colorbar(im, ax=list(axes), label="% of examples of each true digit")
+    fig.suptitle("USPS test confusion matrices — labels used only for evaluation")
     return fig

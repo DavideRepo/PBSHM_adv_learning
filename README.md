@@ -15,14 +15,14 @@ python -m jupyterlab
 
 Open `dann.ipynb` using that environment's Python kernel.
 
-1. Set `MODE = "train"` and run the notebook to train both experiments yourself. This saves `checkpoints/source_only_dann.pt` and `checkpoints/adapted_dann.pt`.
+1. Set `MODE = "train"` and run the notebook to train both experiments yourself. This saves `checkpoints/source_only_dann_v3.pt` and `checkpoints/adapted_dann_v3.pt`.
 2. Set `MODE = "load"` to reuse your saved models and generate the evaluation plots without training.
 
 **No models have been trained and no pretrained weights are supplied.** Loading is the default; missing checkpoints give a clear error instead of starting training. Training again overwrites the two DANN checkpoint files. See [checkpoints/README.md](checkpoints/README.md) for sharing your models.
 
 The demonstration uses NumPy, PyTorch, torchvision and Matplotlib; JupyterLab runs the notebook. For a CPU-specific PyTorch installation, follow the [official installer](https://pytorch.org/get-started/locally/) before installing the requirements.
 
-Default settings: CPU, up to four CPU threads, 12,000 MNIST training examples, all eligible USPS training examples, batch size 128, 20 epochs and three adversarial warm-up epochs. Set `source_samples=None` in `Config` to use all eligible source training images. These settings have not been tuned or benchmarked.
+Default settings: CPU, up to four CPU threads, 24,000 MNIST training examples, all eligible USPS training examples, batch size 128, 30 epochs and three adversarial warm-up epochs. Set `source_samples=None` in `Config` to use all eligible source training images. Set `EPOCHS` in the notebook setup cell to change the duration. Adam uses a constant learning rate of `1e-3` throughout; no learning-rate decay is applied. Runtime and accuracy of this revision have not been benchmarked.
 
 ## USPS download certificate error
 
@@ -56,11 +56,12 @@ The hashes supplied by [torchvision](https://docs.pytorch.org/vision/stable/_mod
 3. Source-only training and DANN adaptation with matched initialization and training budgets.
 4. Classification loss and domain-accuracy curves.
 5. Held-out digit accuracies and actual 2D latent plots coloured by domain and digit.
-6. Discussion questions connecting transfer learning to PBSHM.
+6. USPS confusion matrices for both models, normalized by true digit.
+7. Discussion questions connecting transfer learning to PBSHM.
 
 ## Model and objective
 
-The encoder uses two convolution/ReLU/pooling blocks followed by `FC(64) → FC(2)`. Each classifier has one 32-unit hidden layer. The complete model has **105,901 parameters**.
+The encoder uses two convolution/ReLU/pooling blocks, then a third `3×3` convolution (`32 → 32`) with ReLU on the 7×7 feature maps, followed by `FC(64) → FC(2)`. Each classifier has two 32-unit hidden layers with ReLU. The complete model has **117,261 parameters**.
 
 | Component | Objective it minimizes |
 |---|---|
@@ -70,7 +71,7 @@ The encoder uses two convolution/ReLU/pooling blocks followed by `FC(64) → FC(
 
 The source-only experiment omits the domain loss. DANN uses `loss = classification + domain_loss`; gradient reversal applies the negative sign and `lambda` only on the path back to the encoder. At inference, digit prediction uses only the encoder and digit classifier.
 
-Both runs start from identical weights and receive identical MNIST batches and update counts. In DANN, adversarial pressure ramps up after the warm-up; the domain classifier can learn during warm-up while its encoder gradient is zero. Target batches are reshuffled and reused when exhausted.
+Both runs start from identical weights and receive identical MNIST batches and update counts. In DANN, adversarial pressure is zero during warm-up, rises linearly to `adversarial_weight=0.1` at 60% of training, and stays constant thereafter (for 30 epochs: warm-up ends after epoch 3, ramp ends after epoch 18); the domain classifier can learn during warm-up while its encoder gradient is zero. Target batches are reshuffled and reused when exhausted.
 
 ## Data and evaluation
 
@@ -84,9 +85,11 @@ The hoped-for pattern is lower USPS accuracy before adaptation and an improvemen
 
 In the PBSHM analogy, digits represent shared health/damage classes and the datasets represent different structures or populations. This image example does not establish performance on structural measurements.
 
-## Changes from the earlier version
+## Changes from the earlier versions
 
-This plain DANN replaces the autoencoder: the decoder, reconstruction loss and reconstruction plots are removed. The notebook is now `dann.ipynb`. DANN checkpoints use new filenames and format version 2; old autoencoder checkpoints are not compatible and are not overwritten by the new defaults.
+This remains a plain DANN with a 2D latent space. The expanded model adds one convolution and one hidden layer to each classifier, uses 24,000 source examples and 30 epochs by default, and uses the warm-up / linear / constant adversarial schedule. USPS confusion matrices complement the accuracy and latent plots.
+
+Checkpoints now use **format version 3** and filenames ending in `_v3.pt`. Earlier DANN and autoencoder checkpoints are incompatible with the expanded architecture. Existing files are preserved by the new defaults. After pulling this revision, restart the notebook kernel and set `MODE = "train"` to create a new pair; switch back to `"load"` afterwards.
 
 ## Checks without training
 
