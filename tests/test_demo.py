@@ -1,5 +1,8 @@
 """Offline, synthetic checks only. No fit calls, optimizer steps or datasets downloaded."""
 import json
+import contextlib
+import io
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -21,15 +24,13 @@ class DemoChecks(unittest.TestCase):
         torch.set_num_threads(2)
 
     def test_forward_shapes(self):
-        model = demo.Autoencoder().eval()
+        model = demo.DANN().eval()
         with torch.no_grad():
-            z, reconstruction, logits = model(torch.rand(3, 1, 28, 28))
+            z, logits = model(torch.rand(3, 1, 28, 28))
             domains = model.domain_logits(z, 0.1)
         self.assertEqual(tuple(z.shape), (3, 2))
-        self.assertEqual(tuple(reconstruction.shape), (3, 1, 28, 28))
         self.assertEqual(tuple(logits.shape), (3, 9))
         self.assertEqual(tuple(domains.shape), (3, 2))
-        self.assertTrue(((reconstruction >= 0) & (reconstruction <= 1)).all())
 
     def test_grl_reverses_encoder_gradient_only(self):
         head = torch.nn.Linear(2, 2)
@@ -67,7 +68,7 @@ class DemoChecks(unittest.TestCase):
         self.assertNotIn(0, indices.tolist())
 
     def test_checkpoint_round_trip_and_missing_file(self):
-        model = demo.Autoencoder().eval()  # Random initialization; never fitted.
+        model = demo.DANN().eval()  # Random initialization; never fitted.
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "synthetic.pt"
             demo.save_checkpoint(path, model, [], demo.Config(), adaptation=False)
@@ -80,9 +81,13 @@ class DemoChecks(unittest.TestCase):
                 demo.load_checkpoint(path, adaptation=True)
             with self.assertRaisesRegex(FileNotFoundError, "No training was started"):
                 demo.load_checkpoint(Path(folder) / "missing.pt", adaptation=False)
+            # The prior autoencoder format must fail before loading model weights.
+            torch.save({"format_version": 1}, path)
+            with self.assertRaisesRegex(ValueError, "not from the plain DANN"):
+                demo.load_checkpoint(path, adaptation=False)
 
     def test_notebook_and_plots_without_training(self):
-        path = Path(__file__).resolve().parents[1] / "adversarial_autoencoder.ipynb"
+        path = Path(__file__).resolve().parents[1] / "dann.ipynb"
         notebook = json.loads(path.read_text())
         for cell in notebook["cells"]:
             if cell["cell_type"] == "code":
@@ -90,19 +95,49 @@ class DemoChecks(unittest.TestCase):
                 self.assertEqual(cell["outputs"], [])
                 self.assertIsNone(cell["execution_count"])
         dataset = TensorDataset(torch.rand(9, 1, 28, 28), torch.arange(9))
-        model = demo.Autoencoder().eval()
+        model = demo.DANN().eval()
         before = {k: v.clone() for k, v in model.state_dict().items()}
         result = demo.evaluate(model, dataset)
         self.assertEqual(result["y"].tolist(), list(range(1, 10)))
         self.assertTrue(0 <= result["accuracy"] <= 1)
         figures = [demo.plot_inputs((np.zeros((8, 28, 28)), np.zeros((8, 16, 16)))),
-                   demo.plot_latent(result, result, "Synthetic check"),
-                   demo.plot_reconstructions(model, dataset, dataset)]
+                   demo.plot_latent(result, result, "Synthetic check")]
         for figure in figures:
             figure.canvas.draw()
             plt.close(figure)
         for key, value in model.state_dict().items():
             torch.testing.assert_close(value, before[key])
+
+    def test_notebook_load_workflow_without_training(self):
+        path = Path(__file__).resolve().parents[1] / "dann.ipynb"
+        notebook = json.loads(path.read_text())
+        images = torch.rand(18, 1, 28, 28)
+        source = TensorDataset(images, torch.arange(18) % 9)
+        target = demo.ImagesOnly(images)
+        native = (np.zeros((8, 28, 28)), np.zeros((8, 16, 16)))
+        history = [{"classification": 2.0, "domain_loss": 0.7,
+                    "domain_accuracy": 0.5, "lambda": 0.0}]
+        previous_directory = Path.cwd()
+        with tempfile.TemporaryDirectory() as folder:
+            try:
+                os.chdir(folder)
+                for name, adaptation in (("source_only_dann", False), ("adapted_dann", True)):
+                    demo.save_checkpoint(Path("checkpoints") / f"{name}.pt", demo.DANN(),
+                                         history, demo.Config(), adaptation)
+                with patch.object(demo, "training_data", return_value=(source, target, native)), \
+                     patch.object(demo, "test_data", return_value=(source, source)), \
+                     patch.object(demo, "fit", side_effect=AssertionError("Training prohibited")), \
+                     patch.object(torch.optim.Adam, "step", side_effect=AssertionError("No updates")), \
+                     patch.object(plt, "show"), contextlib.redirect_stdout(io.StringIO()):
+                    scope = {}
+                    for cell in notebook["cells"]:
+                        if cell["cell_type"] == "code":
+                            exec(compile("".join(cell["source"]), str(path), "exec"), scope)
+                    for number in plt.get_fignums():
+                        plt.figure(number).canvas.draw()
+            finally:
+                plt.close("all")
+                os.chdir(previous_directory)
 
 
 if __name__ == "__main__":

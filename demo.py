@@ -1,4 +1,4 @@
-"""Small MNIST -> USPS autoencoder demo. Importing this module never trains a model."""
+"""Small MNIST -> USPS DANN demo. Importing this module never trains a model."""
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import math
@@ -21,7 +21,6 @@ class Config:
     source_samples: int | None = 12000  # None uses all available training images.
     target_samples: int | None = None
     learning_rate: float = 1e-3
-    reconstruction_weight: float = 1.0
     adversarial_weight: float = 0.1
     warmup_epochs: int = 3
 
@@ -101,7 +100,7 @@ class GradientReversal(torch.autograd.Function):
         return -ctx.strength * gradient, None
 
 
-class Autoencoder(nn.Module):
+class DANN(nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = nn.Sequential(
@@ -109,17 +108,13 @@ class Autoencoder(nn.Module):
             nn.Conv2d(16, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2),
             nn.Flatten(), nn.Linear(32 * 7 * 7, 64), nn.ReLU(), nn.Linear(64, 2),
         )
-        self.decoder = nn.Sequential(
-            nn.Linear(2, 64), nn.ReLU(), nn.Linear(64, 128), nn.ReLU(),
-            nn.Linear(128, 28 * 28), nn.Sigmoid(), nn.Unflatten(1, (1, 28, 28)),
-        )
         # Digit class is the pedagogical analogue of structural health state.
         self.health_classifier = nn.Sequential(nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 9))
         self.domain_classifier = nn.Sequential(nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 2))
 
     def forward(self, images):
         z = self.encoder(images)
-        return z, self.decoder(z), self.health_classifier(z)
+        return z, self.health_classifier(z)
 
     def domain_logits(self, z, strength):
         return self.domain_classifier(GradientReversal.apply(z, strength))
@@ -141,7 +136,7 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
     if adaptation and cfg.warmup_epochs >= cfg.epochs:
         raise ValueError("Use more epochs than warmup_epochs to enable adversarial learning.")
     seed_everything(cfg.seed)  # Identical initialization for both experiments.
-    model = Autoencoder().to(device)
+    model = DANN().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
     source_loader = DataLoader(source_set, batch_size=cfg.batch_size, shuffle=True,
                                generator=torch.Generator().manual_seed(cfg.seed), num_workers=0)
@@ -153,12 +148,11 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
         model.train()
         if adaptation:
             target_iterator = iter(target_loader)
-        sums = np.zeros(5)
+        sums = np.zeros(4)
         for step, (xs, ys) in enumerate(source_loader):
             xs, ys = xs.to(device), ys.to(device)
-            zs, reconstruction, logits = model(xs)
+            zs, logits = model(xs)
             classification = F.cross_entropy(logits, ys)
-            reconstruction_loss = F.mse_loss(reconstruction, xs)
             domain_loss = xs.new_zeros(())
             domain_accuracy = xs.new_zeros(())
             strength = 0.0
@@ -180,19 +174,19 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
                                          (dt.argmax(1) == 1).float().mean())
             # GRL applies the negative, scaled domain gradient to the encoder only.
             # Do NOT multiply domain_loss by strength again.
-            loss = classification + cfg.reconstruction_weight * reconstruction_loss + domain_loss
+            loss = classification + domain_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            sums += len(xs) * np.array([classification.item(), reconstruction_loss.item(),
+            sums += len(xs) * np.array([classification.item(),
                                        domain_loss.item(), domain_accuracy.item(), strength])
         values = sums / len(source_set)
-        row = dict(zip(("classification", "reconstruction", "domain_loss", "domain_accuracy", "lambda"),
+        row = dict(zip(("classification", "domain_loss", "domain_accuracy", "lambda"),
                        values.tolist()))
         history.append(row)
         name = "adapted" if adaptation else "source-only"
         print(f"{name:11s} | epoch {epoch + 1:02d}/{cfg.epochs} | "
-              f"digit CE {row['classification']:.3f} | reconstruction MSE {row['reconstruction']:.4f}" +
+              f"digit CE {row['classification']:.3f}" +
               (f" | domain accuracy {row['domain_accuracy']:.1%}" if adaptation else ""))
     return model.eval(), history
 
@@ -200,7 +194,8 @@ def fit(source_set, target_set, cfg, adaptation=False, device="cpu"):
 def save_checkpoint(path, model, history, cfg, adaptation):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({"format_version": 1, "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+    torch.save({"format_version": 2, "architecture": "DANN",
+                "state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
                 "history": history, "config": asdict(cfg), "adaptation": adaptation,
                 "digits": list(range(1, 10)), "preprocessing": "gray28_bilinear_0to1"}, path)
 
@@ -211,10 +206,13 @@ def load_checkpoint(path, adaptation, device="cpu"):
         raise FileNotFoundError(f"Missing {path}. Set MODE = 'train' and run both training cells, "
                                 "or place your trained checkpoint here. No training was started.")
     saved = torch.load(path, map_location=device, weights_only=True)
-    if (saved["format_version"] != 1 or saved["adaptation"] != adaptation or
+    if saved.get("format_version") != 2 or saved.get("architecture") != "DANN":
+        raise ValueError("This checkpoint is not from the plain DANN demo. "
+                         "Train a new DANN pair or load compatible DANN checkpoints.")
+    if (saved["adaptation"] != adaptation or
             saved["digits"] != list(range(1, 10)) or saved["preprocessing"] != "gray28_bilinear_0to1"):
         raise ValueError("Checkpoint does not match this experiment / demo format.")
-    model = Autoencoder().to(device)
+    model = DANN().to(device)
     model.load_state_dict(saved["state_dict"])
     print(f"Loaded {path}; training settings: {saved['config']}")
     return model.eval(), saved["history"], saved["config"]
@@ -264,23 +262,4 @@ def plot_latent(source_result, target_result, title, max_points=1500):
     axes[0].set_ylabel("$z_2$")
     fig.colorbar(scatter, ax=list(axes[1:]), ticks=range(1, 10), label="Digit")
     fig.suptitle(title + " — actual 2D bottleneck, no PCA / t-SNE")
-    return fig
-
-
-@torch.no_grad()
-def plot_reconstructions(model, source_set, target_set, device="cpu"):
-    model.eval()
-    fig, axes = plt.subplots(4, 6, figsize=(8, 5), layout="constrained")
-    for block, dataset in enumerate((source_set, target_set)):
-        images = torch.stack([dataset[i][0] for i in range(min(6, len(dataset)))])
-        reconstruction = model.decoder(model.encoder(images.to(device))).cpu()
-        for col in range(6):
-            for row in (2 * block, 2 * block + 1):
-                axes[row, col].axis("off")
-            if col < len(images):
-                axes[2 * block, col].imshow(images[col, 0].numpy(), cmap="gray", vmin=0, vmax=1)
-                axes[2 * block + 1, col].imshow(reconstruction[col, 0].numpy(), cmap="gray", vmin=0, vmax=1)
-    for row, title in enumerate(("MNIST input", "MNIST reconstruction", "USPS input", "USPS reconstruction")):
-        axes[row, 0].set_title(title, loc="left", fontsize=9)
-    fig.suptitle("Adapted autoencoder: decoder trained on MNIST only")
     return fig
