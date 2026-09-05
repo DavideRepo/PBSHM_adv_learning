@@ -24,6 +24,31 @@ The demonstration uses NumPy, PyTorch, torchvision and Matplotlib; JupyterLab ru
 
 Default settings: CPU, up to four CPU threads, 12,000 MNIST training examples, all eligible USPS training examples, batch size 128, 20 epochs and three adversarial warm-up epochs. Set `source_samples=None` in `Config` to use all eligible source training images. These settings have not been tuned or benchmarked.
 
+## USPS download certificate error
+
+If section 2 stops at `USPS(..., download=True)` with `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`, Python could not build a trusted certificate chain for the USPS download host. The traceback alone does not identify whether the cause is the server chain, local certificate configuration or a network proxy.
+
+You can use your browser to download the original files instead:
+
+| Split | Original archive | Save as, with the default `DATA_DIR` |
+|---|---|---|
+| Training | [usps.bz2](https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/multiclass/usps.bz2) | `data/usps.bz2` |
+| Test | [usps.t.bz2](https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/multiclass/usps.t.bz2) | `data/usps.t.bz2` |
+
+1. Download both files through a browser that accepts the HTTPS connection normally. If the browser also reports a certificate warning, do not bypass it; the certificate or network configuration needs attention.
+2. Save the archives directly inside the notebook's `DATA_DIR`, keeping their exact names and leaving them compressed. Do not put them inside `data/USPS/`.
+3. Rerun the failed cell. Torchvision uses the local archives and skips their downloads, including the test archive later in the notebook. This does not load test labels during training.
+
+If PyCharm uses a different working directory, run `print(DATA_DIR.resolve())` in a notebook cell to see the exact destination. No code changes or additional packages are required, and no SSL-verification settings need to be changed.
+
+Optional file-integrity check in PyCharm's PowerShell terminal (from the repository folder):
+
+```powershell
+Get-FileHash data/usps.bz2, data/usps.t.bz2 -Algorithm MD5
+```
+
+The hashes supplied by [torchvision](https://docs.pytorch.org/vision/stable/_modules/torchvision/datasets/usps.html) are `ec16c51db3855ca6c91edd34d0e9b197` (training) and `8ea070ee2aca1ac39742fdd1ef5ed118` (test). These identify the expected archives; they do not replace HTTPS certificate verification.
+
 ## What students see
 
 1. Input differences between MNIST and USPS.
