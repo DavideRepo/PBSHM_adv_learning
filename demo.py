@@ -61,6 +61,18 @@ def image_tensor(data, indices):
     return images
 
 
+def native_digit_grid(data, labels, seed):
+    """Five random native images per digit, arranged as [row, digit, height, width]."""
+    data, labels = np.asarray(data), np.asarray(labels)
+    rng = np.random.default_rng(seed)  # Independent of training randomness.
+    columns = []
+    for digit in range(1, 10):
+        indices = np.flatnonzero(labels == digit)
+        selected = rng.choice(indices, size=5, replace=len(indices) < 5)
+        columns.append(data[selected])
+    return np.stack(columns, axis=1)
+
+
 def training_data(root, cfg):
     """Official TRAIN splits only; return source labels and target images."""
     source = MNIST(root, train=True, download=True)
@@ -69,9 +81,9 @@ def training_data(root, cfg):
     target_labels = torch.as_tensor(target.targets, dtype=torch.long)
     si = digit_indices(source_labels, cfg.source_samples, cfg.seed)
     ti = digit_indices(target_labels, cfg.target_samples, cfg.seed)
-    # Keep native-resolution examples for the input-domain illustration.
-    native = (np.asarray(source.data)[si[:8].numpy()],
-              np.asarray(target.data)[ti[:8].numpy()])
+    # Labels arrange the illustration only; target training still receives images only.
+    native = (native_digit_grid(source.data, source_labels, cfg.seed),
+              native_digit_grid(target.data, target_labels, cfg.seed))
     source_set = TensorDataset(image_tensor(source.data, si), source_labels[si] - 1)
     target_set = ImagesOnly(image_tensor(target.data, ti))
     return source_set, target_set, native
@@ -240,14 +252,19 @@ def evaluate(model, dataset, device="cpu"):
 
 
 def plot_inputs(native):
-    fig, axes = plt.subplots(2, 8, figsize=(10, 3), layout="constrained")
-    for row, (images, title) in enumerate(zip(native, ("MNIST: 28 × 28", "USPS: 16 × 16"))):
-        for col, ax in enumerate(axes[row]):
-            ax.axis("off")
-            if col < len(images):
-                ax.imshow(images[col], cmap="gray", vmin=0, vmax=255, interpolation="nearest")
-        axes[row, 0].set_title(title, loc="left")
-    fig.suptitle("Native inputs: different resolution and handwriting style (unlabelled examples)")
+    fig = plt.figure(figsize=(10, 11), layout="constrained")
+    for panel, images, title in zip(fig.subfigures(2, 1), native,
+                                     ("MNIST: 28 × 28", "USPS: 16 × 16")):
+        axes = panel.subplots(5, 9)
+        for row in range(5):
+            for col in range(9):
+                ax = axes[row, col]
+                ax.imshow(images[row, col], cmap="gray", vmin=0, vmax=255, interpolation="nearest")
+                ax.axis("off")
+                if row == 0:
+                    ax.set_title(str(col + 1))
+        panel.suptitle(title)
+    fig.suptitle("Native datasets: five random examples per digit")
     return fig
 
 

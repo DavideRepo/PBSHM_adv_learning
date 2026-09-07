@@ -75,7 +75,7 @@ Both runs start from identical weights and receive identical MNIST batches and u
 
 ## Data and evaluation
 
-- The shared class set is **digits 1–9**. Dataset metadata is used once to remove zero; this is a stated closed-set curation assumption. Classifier indices are 0–8, converted back to digit labels for plotting.
+- The shared class set is **digits 1–9**. Dataset metadata is used to remove zero (a stated closed-set curation assumption) and to arrange the native-input illustration into five random examples per digit. This illustration does not supply target labels to training. Classifier indices are 0–8, converted back to digit labels for plotting.
 - MNIST stays at 28 × 28; USPS is bilinearly resized from 16 × 16. Both are scaled to [0, 1].
 - Source-only training uses MNIST training images and labels. DANN also uses USPS training **images only**: the target wrapper stores no digit labels.
 - Knowing the domain (MNIST or USPS) is different from knowing the digit.

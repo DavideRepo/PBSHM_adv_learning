@@ -134,7 +134,7 @@ class DemoChecks(unittest.TestCase):
         result = demo.evaluate(model, dataset)
         self.assertEqual(result["y"].tolist(), list(range(1, 10)))
         self.assertTrue(0 <= result["accuracy"] <= 1)
-        figures = [demo.plot_inputs((np.zeros((8, 28, 28)), np.zeros((8, 16, 16)))),
+        figures = [demo.plot_inputs((np.zeros((5, 9, 28, 28)), np.zeros((5, 9, 16, 16)))),
                    demo.plot_latent(result, result, "Synthetic check")]
         for figure in figures:
             figure.canvas.draw()
@@ -148,7 +148,7 @@ class DemoChecks(unittest.TestCase):
         images = torch.rand(18, 1, 28, 28)
         source = TensorDataset(images, torch.arange(18) % 9)
         target = demo.ImagesOnly(images)
-        native = (np.zeros((8, 28, 28)), np.zeros((8, 16, 16)))
+        native = (np.zeros((5, 9, 28, 28)), np.zeros((5, 9, 16, 16)))
         history = [{"classification": 2.0, "domain_loss": 0.7,
                     "domain_accuracy": 0.5, "lambda": 0.0}]
         previous_directory = Path.cwd()
