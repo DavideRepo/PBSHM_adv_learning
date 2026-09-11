@@ -39,25 +39,6 @@ You can use your browser to download the original files instead:
 2. Save the archives directly inside the notebook's `DATA_DIR`, keeping their exact names and leaving them compressed. Do not put them inside `data/USPS/`.
 3. Rerun the failed cell. Torchvision uses the local archives and skips their downloads, including the test archive later in the notebook. This does not load test labels during training.
 
-If PyCharm uses a different working directory, run `print(DATA_DIR.resolve())` in a notebook cell to see the exact destination. No code changes or additional packages are required, and no SSL-verification settings need to be changed.
-
-Optional file-integrity check in PyCharm's PowerShell terminal (from the repository folder):
-
-```powershell
-Get-FileHash data/usps.bz2, data/usps.t.bz2 -Algorithm MD5
-```
-
-The hashes supplied by [torchvision](https://docs.pytorch.org/vision/stable/_modules/torchvision/datasets/usps.html) are `ec16c51db3855ca6c91edd34d0e9b197` (training) and `8ea070ee2aca1ac39742fdd1ef5ed118` (test). These identify the expected archives; they do not replace HTTPS certificate verification.
-
-## What students see
-
-1. Input differences between MNIST and USPS.
-2. A simple explanation of the encoder, two classifiers and gradient reversal.
-3. Source-only training and DANN adaptation with matched initialization and training budgets.
-4. Classification loss and domain-accuracy curves.
-5. Held-out digit accuracies and actual 2D latent plots coloured by domain and digit.
-6. USPS confusion matrices for both models, normalized by true digit.
-7. Discussion questions connecting transfer learning to PBSHM.
 
 ## Model and objective
 
@@ -84,12 +65,6 @@ Both runs start from identical weights and receive identical MNIST batches and u
 The hoped-for pattern is lower USPS accuracy before adaptation and an improvement afterwards. Neither outcome is guaranteed, particularly with a 2D bottleneck. Domain mixing can align different classes incorrectly. Using USPS scores to select settings or seeds would make those labels validation data rather than an untouched final evaluation.
 
 In the PBSHM analogy, digits represent shared health/damage classes and the datasets represent different structures or populations. This image example does not establish performance on structural measurements.
-
-## Changes from the earlier versions
-
-This remains a plain DANN with a 2D latent space. The expanded model adds one convolution and one hidden layer to each classifier, uses 24,000 source examples and 30 epochs by default, and uses the warm-up / linear / constant adversarial schedule. USPS confusion matrices complement the accuracy and latent plots.
-
-Checkpoints now use **format version 3** and filenames ending in `_v3.pt`. Earlier DANN and autoencoder checkpoints are incompatible with the expanded architecture. Existing files are preserved by the new defaults. After pulling this revision, restart the notebook kernel and set `MODE = "train"` to create a new pair; switch back to `"load"` afterwards.
 
 ## Checks without training
 

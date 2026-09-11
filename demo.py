@@ -269,22 +269,22 @@ def plot_inputs(native):
 
 
 def plot_latent(source_result, target_result, title, max_points=1500):
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharex=True, sharey=True, layout="constrained")
+    fig, axes = plt.subplots(1, 3, figsize=(8, 3), sharex=True, sharey=True, layout="constrained")
     rng = np.random.default_rng(7)
     for result, domain, marker in ((source_result, "MNIST", "o"), (target_result, "USPS", "^")):
         indices = rng.choice(len(result["z"]), min(max_points, len(result["z"])), replace=False)
         z, y = result["z"][indices], result["y"][indices]
-        axes[0].scatter(*z.T, s=7, alpha=0.35, marker=marker, label=domain)
+        axes[0].scatter(*z.T, s=7, alpha=0.5, marker=marker, label=domain, edgecolors="none")
         ax = axes[1] if domain == "MNIST" else axes[2]
-        scatter = ax.scatter(*z.T, c=y, s=7, alpha=0.6, cmap="tab10", vmin=0.5, vmax=9.5)
-        ax.set_title(f"{domain}: true digit (evaluation only)")
-    axes[0].set_title("Colour / marker = domain")
+        scatter = ax.scatter(*z.T, c=y, s=7, alpha=0.7, cmap="tab10", vmin=0.5, vmax=9.5, edgecolors="none")
+        ax.set_title(f"{domain}: true digit labels")
+    axes[0].set_title("Source / Target data")
     axes[0].legend(markerscale=2)
     for ax in axes:
         ax.set_xlabel("$z_1$")
     axes[0].set_ylabel("$z_2$")
     fig.colorbar(scatter, ax=list(axes[1:]), ticks=range(1, 10), label="Digit")
-    fig.suptitle(title + " — actual 2D bottleneck, no PCA / t-SNE")
+    fig.suptitle(title + " — 2D bottleneck")
     return fig
 
 
